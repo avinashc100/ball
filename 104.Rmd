@@ -1,0 +1,130 @@
+---
+title: "Fire as a Determinant of Human Health"
+output: html_notebook
+---
+
+
+```{r}
+knitr::opts_knit$set(root.dir=normalizePath("C:/Users/ac361/Desktop/QBIO_490/qbio_490_avinash/analysis_data"))
+```
+
+
+```{r}
+install.packages('burnr')
+install.packages("devtools")
+install.packages("areaplot")
+library(areaplot)
+library(ggplot2)
+library(ggExtra)
+library(hrbrthemes)
+library(burnr)
+library(XML)
+library(methods)
+
+result <- xmlParse(file = "C:/Users/ac361/downloads/ACMSE2022_metadata.xml")
+print(result)
+
+#download Stanford machine learning data and read into R
+county_predictions <- read.csv("C:/Users/ac361/downloads/smokePM2pt5_predictions_daily_county_20060101-20201231.csv")
+
+county_predictions$californiastatus = TRUE
+ifelse(county_predictions$GEOID < 6000, FALSE, TRUE)
+county_predictions$californiastatus <- ifelse(county_predictions$GEOID > 7999 | county_predictions$GEOID < 6000, FALSE, TRUE )
+
+```
+
+
+```{r}
+#survival plot for PM2.5 Exposure Differential
+clinical_query <- GDCquery(project = "TCGA-LUAD", data.category = "Clinical", file.type = "xml")
+GDCdownload(clinical_query)
+
+clinical <- GDCprepare_clinic(query = clinical_query, clinical.info = "patient")
+
+maf_query <- GDCquery(
+    project = "TCGA-LUAD", data.category = "Simple Nucleotide Variation", access = "open",
+    data.type = "Masked Somatic Mutation", workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+GDCdownload(maf_query)
+maf <- GDCprepare(maf_query) # as long as it runs, ignore any errors
+
+colnames(clinical)[ colnames(clinical) == "bcr_patient_barcode" ] <- "Tumor_Sample_Barcode"
+
+maf_object <- read.maf(maf = maf, clinicalData = clinical, isTCGA = TRUE)
+
+clinical$smoking_status = ifelse(is.na(clinical$year_of_tobacco_smoking_onset), FALSE, TRUE)
+
+
+clinical$survivaltime = ifelse(is.na(clinical$days_to_death), clinical$days_to_last_followup, clinical$days_to_death)
+clinical$deathstatus = ifelse(clinical$vital_status == "Dead", TRUE, FALSE)
+
+
+survival_object <- Surv(time = clinical$survivaltime, event = clinical$deathstatus)
+smoking_sort <- surv_fit(survival_object ~ clinical$smoking_status, data = clinical)
+
+
+ggsurvplot(smoking_sort, data = clinical, surv.median.line = "hv", legend.title = "Excess PM2.5 Inhalation", legend.labs = c("High Exposure", "Minimal Exposure"), pval = TRUE, conf.int = TRUE, risk.table = TRUE, tables.height = 0.2, tables.theme = clean_theme(), ggtheme = theme_gray())
+```
+
+
+```{r}
+#Cleaning up PM Machine Learning model data and plotting change in PM levels over time within California
+california_county_predictions <- county_predictions[145960:205511,]
+
+aggregate(california_county_predictions['smokePM_pred'], by=california_county_predictions['date'], sum)
+
+california_county_predictions$year <- str_extract(california_county_predictions$date, "^\\d{4}")
+
+cal_by_year <- aggregate(california_county_predictions['smokePM_pred'], by=california_county_predictions['year'], sum)
+
+cal_by_year$year <- as.numeric(cal_by_year$year)
+
+county_predictions$GEOID <- as.numeric(county_predictions$GEOID)
+
+p <- ggplot(cal_by_year, aes(x = year, y = smokePM_pred)) + geom_point() + theme_ipsum() + geom_line(color = "grey") +ggtitle("Change in Fire-Mediated PM Levels in CA over Time") +xlab("Year") + ylab("PM Levels")
+
+mynamestheme <- theme(
+  plot.title = element_text(family = "Helvetica", face = "bold", size = (15)),
+  legend.title = element_text(colour = "steelblue", face = "bold.italic", family = "Helvetica"),
+  legend.text = element_text(face = "italic", colour = "steelblue4", family = "Helvetica"),
+  axis.title = element_text(family = "Helvetica", size = (10), colour = "steelblue4"),
+  axis.text = element_text(family = "Courier", colour = "cornflowerblue", size = (10))
+)
+ggMarginal(p + mynamestheme, type = "densigram", margins = "y", fill = 4)
+```
+
+
+```{r}
+#cleaning up PM Machine Learning data and plotting change in PM levels over time within the rest of the United States
+non_california_county_predictions <- county_predictions[county_predictions$californiastatus == FALSE,]
+
+aggregate(non_california_county_predictions['smokePM_pred'], by=non_california_county_predictions['date'], sum)
+
+non_california_county_predictions$year <- str_extract(non_california_county_predictions$date, "^\\d{4}")
+
+non_cal_by_year <- aggregate(non_california_county_predictions['smokePM_pred'], by=non_california_county_predictions['year'], sum)
+
+non_cal_by_year$year <- as.numeric(non_cal_by_year$year)
+
+non_county_predictions$GEOID <- as.numeric(non_county_predictions$GEOID)
+
+n <- ggplot(non_cal_by_year, aes(x = year, y = smokePM_pred)) + geom_point() + theme_ipsum() + geom_line(color = "grey") + ggtitle("Change in Fire-Mediated PM Levels in US over Time") +xlab("Year") + ylab("PM Levels")
+
+mynamestheme <- theme(
+  plot.title = element_text(family = "Helvetica", face = "bold", size = (16)),
+  legend.title = element_text(colour = "steelblue", face = "bold.italic", family = "Helvetica"),
+  legend.text = element_text(face = "italic", colour = "steelblue4", family = "Helvetica"),
+  axis.title = element_text(family = "Helvetica", size = (10), colour = "steelblue4"),
+  axis.text = element_text(family = "Courier", colour = "cornflowerblue", size = (10))
+)
+ggMarginal(n + mynamestheme, type = "densigram", margins = "y", fill = 4)
+
+```
+
+
+```{r}
+#mapping the gene locus of FOXP3 to determine differential mutation locations between High PM-Exposure and Low PM-Exposure Patients
+lollipopPlot2(m1 = smoking_positive_maf, m2 = smoking_negative_maf, m1_name = "High PM-Exposure Patients", m2_name = "Low PM-Exposure Patients", gene = "FOXP3")
+```
+
+
